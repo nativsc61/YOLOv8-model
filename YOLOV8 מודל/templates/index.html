@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>FRC Ultra-Smooth 30FPS Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        .glass { background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.1); }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans p-4">
+
+    <div class="max-w-7xl mx-auto">
+        <header class="flex justify-between items-center mb-4 glass p-4 rounded-xl">
+            <div class="flex items-center gap-4">
+                <h1 class="text-xl font-bold text-emerald-400">FRC Smooth Real-Time Tracker</h1>
+                <a href="https://strategyboard.app/" target="_blank" rel="noopener noreferrer" class="bg-blue-600 hover:bg-blue-500 text-xs font-bold px-4 py-2 rounded-lg transition flex items-center gap-1">
+                    📋 לוח אסטרטגיה (StrategyBoard.app) ↗
+                </a>
+            </div>
+            <span id="fps-badge" class="text-xs px-3 py-1 bg-emerald-950 text-emerald-400 border border-emerald-800 rounded-full font-bold">30 FPS Video Stream</span>
+        </header>
+
+        <div class="glass p-3 rounded-xl mb-4 flex gap-2">
+            <input id="stream-url" type="text" placeholder="הכנס קישור יוטיוב או נתיב וידאו..." class="flex-1 bg-slate-900 border border-slate-700 rounded px-3 py-1.5 text-xs">
+            <button onclick="startStream()" class="bg-emerald-600 hover:bg-emerald-500 px-4 py-1.5 text-xs font-bold rounded">טען וידאו</button>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            
+            <div class="glass p-3 rounded-xl flex flex-col items-center">
+                <span class="text-xs font-bold text-yellow-400 mb-2">1. וידאו חי חלק ללא חיתוך (גרור נקודות לכיול)</span>
+                <div class="relative inline-block border border-slate-800 rounded overflow-hidden w-[600px] h-[400px] bg-black flex items-center justify-center">
+                    <img id="video-feed" src="" class="w-full h-full object-contain block select-none">
+                    <canvas id="video-canvas" width="600" height="400" class="absolute top-0 left-0 cursor-crosshair"></canvas>
+                </div>
+
+                <div class="w-[600px] mt-3 bg-slate-900 p-2 rounded-lg flex items-center gap-3 border border-slate-800">
+                    <button onclick="controlAction('play')" class="text-xs bg-emerald-600 px-2.5 py-1 rounded">▶</button>
+                    <button onclick="controlAction('pause')" class="text-xs bg-yellow-600 px-2.5 py-1 rounded">⏸</button>
+                    <button onclick="controlAction('seek_back')" class="text-xs bg-slate-700 px-2 py-1 rounded">⏪ 10s</button>
+                    <button onclick="controlAction('seek_forward')" class="text-xs bg-slate-700 px-2 py-1 rounded">10s ⏩</button>
+                    <span id="time-display" class="text-xs font-mono text-slate-400">00:00 / 00:00</span>
+                </div>
+            </div>
+
+            <div class="glass p-3 rounded-xl flex flex-col items-center">
+                <span class="text-xs font-bold text-emerald-400 mb-2">2. מפת 2D (כדורים בצורת עיגול, רובוטים בריבוע)</span>
+                <div class="relative inline-block border border-slate-800 rounded overflow-hidden w-[600px] h-[400px] bg-slate-950 flex items-center justify-center">
+                    <canvas id="map-canvas" width="600" height="400" class="block cursor-crosshair"></canvas>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+
+        let calibDots = [
+            { src: {x: 0.1, y: 0.1}, dst: {x: 0.1, y: 0.1}, color: '#ef4444' },
+            { src: {x: 0.9, y: 0.1}, dst: {x: 0.9, y: 0.1}, color: '#3b82f6' },
+            { src: {x: 0.9, y: 0.9}, dst: {x: 0.9, y: 0.9}, color: '#10b981' },
+            { src: {x: 0.1, y: 0.9}, dst: {x: 0.1, y: 0.9}, color: '#eab308' }
+        ];
+
+        let activeVideoDrag = null;
+        let activeMapDrag = null;
+        let latestTelemetry = [];
+
+        const videoCanvas = document.getElementById('video-canvas');
+        const vCtx = videoCanvas.getContext('2d');
+        const mapCanvas = document.getElementById('map-canvas');
+        const mCtx = mapCanvas.getContext('2d');
+
+        const mapImg = new Image();
+        mapImg.src = '/map.png';
+        mapImg.onload = () => drawMap();
+
+        videoCanvas.addEventListener('mousedown', (e) => {
+            const rect = videoCanvas.getBoundingClientRect();
+            const mx = (e.clientX - rect.left) / rect.width;
+            const my = (e.clientY - rect.top) / rect.height;
+
+            calibDots.forEach((dot, i) => {
+                if (Math.hypot((dot.src.x - mx) * 600, (dot.src.y - my) * 400) < 15) activeVideoDrag = i;
+            });
+        });
+
+        videoCanvas.addEventListener('mousemove', (e) => {
+            if (activeVideoDrag !== null) {
+                const rect = videoCanvas.getBoundingClientRect();
+                calibDots[activeVideoDrag].src.x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                calibDots[activeVideoDrag].src.y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+                drawVideoOverlay();
+                syncCalibration();
+            }
+        });
+
+        mapCanvas.addEventListener('mousedown', (e) => {
+            const rect = mapCanvas.getBoundingClientRect();
+            const mx = (e.clientX - rect.left) / rect.width;
+            const my = (e.clientY - rect.top) / rect.height;
+
+            calibDots.forEach((dot, i) => {
+                if (Math.hypot((dot.dst.x - mx) * 600, (dot.dst.y - my) * 400) < 15) activeMapDrag = i;
+            });
+        });
+
+        mapCanvas.addEventListener('mousemove', (e) => {
+            if (activeMapDrag !== null) {
+                const rect = mapCanvas.getBoundingClientRect();
+                calibDots[activeMapDrag].dst.x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                calibDots[activeMapDrag].dst.y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+                drawMap();
+                syncCalibration();
+            }
+        });
+
+        window.addEventListener('mouseup', () => { activeVideoDrag = null; activeMapDrag = null; });
+
+        function drawVideoOverlay() {
+            vCtx.clearRect(0, 0, 600, 400);
+
+            vCtx.beginPath();
+            vCtx.moveTo(calibDots[0].src.x * 600, calibDots[0].src.y * 400);
+            for(let i=1; i<4; i++) vCtx.lineTo(calibDots[i].src.x * 600, calibDots[i].src.y * 400);
+            vCtx.closePath();
+            vCtx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+            vCtx.lineWidth = 2;
+            vCtx.stroke();
+
+            calibDots.forEach((dot) => {
+                vCtx.beginPath();
+                vCtx.arc(dot.src.x * 600, dot.src.y * 400, 9, 0, Math.PI * 2);
+                vCtx.fillStyle = dot.color;
+                vCtx.fill();
+                vCtx.strokeStyle = '#ffffff';
+                vCtx.lineWidth = 2;
+                vCtx.stroke();
+            });
+        }
+
+        function drawMap() {
+            mCtx.clearRect(0, 0, 600, 400);
+
+            if (mapImg.complete && mapImg.naturalWidth !== 0) {
+                const imgRatio = mapImg.naturalWidth / mapImg.naturalHeight;
+                const canvasRatio = 600 / 400;
+                
+                let renderW = 600, renderH = 400, offsetX = 0, offsetY = 0;
+                if (imgRatio > canvasRatio) {
+                    renderH = 600 / imgRatio;
+                    offsetY = (400 - renderH) / 2;
+                } else {
+                    renderW = 400 * imgRatio;
+                    offsetX = (600 - renderW) / 2;
+                }
+
+                mCtx.drawImage(mapImg, offsetX, offsetY, renderW, renderH);
+            }
+
+            mCtx.beginPath();
+            mCtx.moveTo(calibDots[0].dst.x * 600, calibDots[0].dst.y * 400);
+            for(let i=1; i<4; i++) mCtx.lineTo(calibDots[i].dst.x * 600, calibDots[i].dst.y * 400);
+            mCtx.closePath();
+            mCtx.strokeStyle = 'rgba(16, 185, 129, 0.8)';
+            mCtx.lineWidth = 2;
+            mCtx.stroke();
+
+            calibDots.forEach((dot) => {
+                mCtx.beginPath();
+                mCtx.arc(dot.dst.x * 600, dot.dst.y * 400, 8, 0, Math.PI * 2);
+                mCtx.fillStyle = dot.color;
+                mCtx.fill();
+                mCtx.strokeStyle = '#ffffff';
+                mCtx.lineWidth = 2;
+                mCtx.stroke();
+            });
+
+            latestTelemetry.forEach(obj => {
+                let px = obj.norm_x * 600;
+                let py = obj.norm_y * 400;
+
+                if (obj.is_fuel) {
+                    mCtx.beginPath();
+                    mCtx.arc(px, py, 7, 0, Math.PI * 2);
+                    mCtx.fillStyle = '#facc15';
+                    mCtx.fill();
+                    mCtx.strokeStyle = '#000000';
+                    mCtx.lineWidth = 1.5;
+                    mCtx.stroke();
+                } else {
+                    let clsUpper = obj.cls.toUpperCase();
+                    let color = clsUpper.includes('RED') ? '#ef4444' : (clsUpper.includes('BLUE') ? '#3b82f6' : '#10b981');
+
+                    mCtx.fillStyle = color;
+                    mCtx.fillRect(px - 10, py - 10, 20, 20);
+                    mCtx.strokeStyle = '#ffffff';
+                    mCtx.lineWidth = 2;
+                    mCtx.strokeRect(px - 10, py - 10, 20, 20);
+
+                    mCtx.fillStyle = '#ffffff';
+                    mCtx.font = 'bold 11px sans-serif';
+                    mCtx.fillText(`${obj.id}`, px - 12, py - 14);
+                }
+            });
+        }
+
+        function syncCalibration() {
+            fetch('/api/update_calibration', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    src_norm: calibDots.map(d => [d.src.x, d.src.y]),
+                    dst_norm: calibDots.map(d => [d.dst.x, d.dst.y])
+                })
+            });
+            drawMap();
+        }
+
+        function startStream() {
+            const url = document.getElementById('stream-url').value;
+            fetch('/api/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({url: url})
+            }).then(r => r.json()).then(d => {
+                if(d.status === 'success') {
+                    document.getElementById('video-feed').src = '/video_feed';
+                    syncCalibration();
+                }
+            });
+        }
+
+        function controlAction(action) {
+            fetch('/api/control', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({action: action})
+            });
+        }
+
+        socket.on('telemetry_update', (data) => {
+            latestTelemetry = data.objects;
+            let cur = Math.floor(data.current_time || 0);
+            let tot = Math.floor(data.total_time || 0);
+            document.getElementById('time-display').innerText = 
+                `${Math.floor(cur/60)}:${(cur%60).toString().padStart(2,'0')} / ${Math.floor(tot/60)}:${(tot%60).toString().padStart(2,'0')}`;
+
+            drawMap();
+        });
+
+        drawVideoOverlay();
+        drawMap();
+    </script>
+</body>
+</html>
