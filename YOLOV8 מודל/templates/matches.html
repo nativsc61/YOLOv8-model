@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+
+{% block title %}FRC Tracker - לוח מקצים{% endblock %}
+
+{% block content %}
+<div class="glass p-6 rounded-xl flex flex-col min-h-[600px]">
+    
+    <div class="flex items-center justify-between mb-4 pb-2 border-b border-slate-800">
+        <h2 class="text-lg font-bold text-slate-200 flex items-center gap-2">
+            <span>📊</span> לוח מקצים (Match Schedule)
+        </h2>
+        <div class="flex items-center gap-3">
+            <span class="text-xs bg-slate-800 text-slate-400 px-3 py-1 rounded-full" id="matches-count">0 מקצים</span>
+            <!-- כפתור העלאת לוח מקצים -->
+            <label class="cursor-pointer bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3 py-1.5 rounded-md transition flex items-center gap-1 shadow-sm">
+                <span>📁 העלה לוח מקצים</span>
+                <input type="file" id="schedule-file-input" accept=".json,.csv" class="hidden" onchange="uploadScheduleFile(this)">
+            </label>
+        </div>
+    </div>
+
+    <!-- Filters Bar -->
+    <div class="space-y-2 mb-4 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+        <span class="text-xs font-bold text-slate-400 block mb-1">סינון לפי קבוצות:</span>
+        <div class="flex gap-2">
+            <input id="team-search-input" type="text" oninput="filterMatches()" placeholder="חפש לפי מספר קבוצה (למשל: 1690)..." class="flex-1 bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
+        </div>
+        <div class="flex gap-2 flex-wrap text-xs pt-1">
+            <button onclick="setFilter('all', this)" class="filter-btn bg-emerald-600 text-white px-3 py-1 rounded-md transition">הכל</button>
+            <button onclick="setFilter('my_team', this)" class="filter-btn bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1 rounded-md transition">הקבוצה שלי (1690)</button>
+            <button onclick="setFilter('red', this)" class="filter-btn bg-slate-800 hover:bg-slate-700 text-red-400 px-3 py-1 rounded-md transition">ברית אדומה</button>
+            <button onclick="setFilter('blue', this)" class="filter-btn bg-slate-800 hover:bg-slate-700 text-blue-400 px-3 py-1 rounded-md transition">ברית כחולה</button>
+        </div>
+    </div>
+
+    <!-- Matches List Container -->
+    <div class="flex-1 overflow-y-auto space-y-3" id="matches-list">
+        <div class="text-center text-slate-500 py-10 text-xs">טוען מקצים או גרור קובץ לוח מקצים לכאן...</div>
+    </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let allMatches = [];
+    let currentFilter = 'all';
+
+    // טעינת רשימת המקצים בעליית הדף
+    async function loadMatches() {
+        try {
+            const res = await fetch('/api/matches');
+            const data = await res.json();
+            allMatches = data.matches || [];
+            renderMatches(allMatches);
+        } catch (e) {
+            console.error("שגיאה בטעינת המקצים:", e);
+        }
+    }
+
+    function renderMatches(matches) {
+        const container = document.getElementById('matches-list');
+        document.getElementById('matches-count').innerText = `${matches.length} מקצים`;
+        
+        if (matches.length === 0) {
+            container.innerHTML = `<div class="text-center text-slate-500 py-10 text-xs">אין מקצים להצגה. השתמש בכפתור "העלה לוח מקצים" למעלה.</div>`;
+            return;
+        }
+
+        container.innerHTML = matches.map(m => `
+            <div class="bg-slate-900/80 border border-slate-800 hover:border-slate-700 p-3 rounded-lg flex items-center justify-between transition">
+                <div class="flex items-center gap-4">
+                    <div class="bg-slate-950 px-3 py-2 rounded text-center min-w-[70px]">
+                        <span class="text-[10px] text-slate-500 block">מקצה</span>
+                        <span class="text-xs font-bold text-slate-200">${m.name || m.id}</span>
+                    </div>
+                    <div>
+                        <div class="text-xs font-semibold text-slate-300">${m.date || 'יום המוקדמות'}</div>
+                        <div class="text-[10px] text-slate-500">משך: ${m.duration || '02:30'}</div>
+                    </div>
+                </div>
+                
+                <div class="flex items-center gap-3">
+                    <div class="text-left text-xs">
+                        <span class="text-red-400 font-bold">${m.red_score ?? '-'}</span> : 
+                        <span class="text-blue-400 font-bold">${m.blue_score ?? '-'}</span>
+                    </div>
+                    <a href="/matches/${m.id}" class="bg-slate-800 hover:bg-emerald-600 text-slate-200 hover:text-white text-xs px-3 py-1.5 rounded transition">
+                        צפה בניתוח ➔
+                    </a>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    // פונקציית טיפול בהעלאת קובץ לוח המקצים
+    async function uploadScheduleFile(input) {
+        const file = input.files[0];
+        if (!file) return;
+
+        const formData = new FormData();
+        formData.append("file", file);
+
+        try {
+            const res = await fetch('/api/upload_schedule', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await res.json();
+            if (result.status === 'success') {
+                alert("לוח המקצים הועלה וסודר בהצלחה!");
+                loadMatches(); // רענון הרשימה במסך
+            } else {
+                alert("שגיאה בהעלאת הקובץ: " + result.message);
+            }
+        } catch (e) {
+            console.error(e);
+            alert("שגיאת תקשורת מול השרת.");
+        }
+        input.value = ''; // איפוס האינפוט
+    }
+
+    document.addEventListener("DOMContentLoaded", loadMatches);
+</script>
+{% endblock %}

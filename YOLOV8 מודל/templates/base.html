@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}FRC Tracker{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <style>
+        .glass { 
+            background: rgba(15, 23, 42, 0.85); 
+            backdrop-filter: blur(12px); 
+            border: 1px solid rgba(255, 255, 255, 0.1); 
+        }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.6); }
+        ::-webkit-scrollbar-thumb { background: rgba(51, 65, 85, 0.8); border-radius: 4px; }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans p-4 select-none">
+
+    <div class="max-w-7xl mx-auto space-y-4">
+        <header class="flex flex-wrap justify-between items-center glass p-4 rounded-xl gap-4">
+            <div class="flex items-center gap-3">
+                <h1 class="text-xl font-bold text-emerald-400">FRC Real-Time Tracker</h1>
+                <a href="/" class="bg-slate-800 hover:bg-slate-700 text-xs font-bold px-3 py-2 rounded-lg transition text-white">🏠 דף הבית</a>
+                <a href="/war-room" class="hover:text-emerald-400 font-bold transition">⚔️ War Room</a>
+                <a href="/matches" class="bg-emerald-600 hover:bg-emerald-500 text-xs font-bold px-3 py-2 rounded-lg transition text-white">📊 לוח מקצים</a>
+                <a href="https://strategyboard.app/" target="_blank" class="bg-blue-600 hover:bg-blue-500 text-xs font-bold px-3 py-2 rounded-lg transition text-white">📋 לוח אסטרטגיה ↗</a>
+            </div>
+            <div class="flex items-center gap-3">
+                <span id="socket-status" class="flex items-center gap-1.5 text-xs px-3 py-1 bg-red-950 text-red-400 border border-red-800 rounded-full font-bold">
+                    <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span> מנותק
+                </span>
+                <span class="text-xs px-3 py-1 bg-emerald-950 text-emerald-400 border border-emerald-800 rounded-full font-bold">30 FPS Stream</span>
+            </div>
+        </header>
+
+        <main>
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>
