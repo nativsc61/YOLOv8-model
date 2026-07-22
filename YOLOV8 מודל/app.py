@@ -5,6 +5,7 @@ import difflib
 import numpy as np
 import time
 import json
+import re
 from collections import deque
 from threading import Thread, Lock
 from queue import Queue
@@ -13,6 +14,7 @@ from flask import Flask, render_template, Response, request, jsonify, send_file
 from flask_socketio import SocketIO
 import yt_dlp
 from ultralytics import YOLO
+from pypdf import PdfReader
 
 # ==========================================
 # חישוב נתיבים מוחלטים למניעת שגיאות טעינה
@@ -24,8 +26,10 @@ BALL_MODEL_PATH = os.path.join(BASE_DIR, 'ball.pt')
 # יצירת תיקיות דיבאג ושמירת סרטונים
 CROPS_DIR = os.path.join(BASE_DIR, 'debug_crops')
 CLIPS_DIR = os.path.join(BASE_DIR, 'saved_clips')
+MATCHES_DIR = os.path.join(BASE_DIR, "cached_matches")
 os.makedirs(CROPS_DIR, exist_ok=True)
 os.makedirs(CLIPS_DIR, exist_ok=True)
+os.makedirs(MATCHES_DIR, exist_ok=True)
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -101,16 +105,16 @@ class TrOCRStreamEngine:
     def __init__(self, model_path=DEFAULT_MODEL_PATH, ball_model_path=BALL_MODEL_PATH):
         print(f"Loading YOLO Model from {model_path}...")
         if os.path.exists(model_path):
-            self.yolo_model = YOLO(model_path)
-            print("✅ מודל YOLO ראשי נטען בהצלחה!")
+            self.yolo_model = YOLO(model_path).to('cuda')
+            print("✅ מודל YOLO ראשי נטען בהצלחה על כרטיס המסך!")
         else:
             print(f"⚠️ אזהרה: הקובץ {model_path} לא נמצא. טוען yolo11n.pt ברירת מחדל...")
-            self.yolo_model = YOLO("yolo11n.pt")
+            self.yolo_model = YOLO("yolo11n.pt").to('cuda')
 
         print(f"Loading Ball YOLO Model from {ball_model_path}...")
         if os.path.exists(ball_model_path):
-            self.ball_model = YOLO(ball_model_path)
-            print("✅ מודל הכדורים (BALL) נטען בהצלחה!")
+            self.ball_model = YOLO(ball_model_path).to('cuda')
+            print("✅ מודל הכדורים (BALL) נטען בהצלחה על כרטיס המסך!")
         else:
             print(f"⚠️ אזהרה: קובץ מודל הכדורים {ball_model_path} לא נמצא. זיהוי כדורים לא יופעל.")
             self.ball_model = None
@@ -151,6 +155,8 @@ class TrOCRStreamEngine:
         self.clip_frames = []
         self.clip_start_time = 0
         self.saw_zero_time = False
+        
+        self.last_ocr_time = 0
         
         Thread(target=self._yolo_loop, daemon=True).start()
         Thread(target=self._ocr_worker_loop, daemon=True).start()
@@ -312,11 +318,12 @@ class TrOCRStreamEngine:
             height, width, _ = frame_to_process.shape
             telemetry = []
 
-            # 1. הרצת מודל הרובוטים והשעון (best.pt)
             results = self.yolo_model.track(
                 frame_to_process, persist=True, tracker="bytetrack.yaml",
                 conf=0.05, imgsz=640, verbose=False
             )
+
+            can_run_ocr = (time.time() - self.last_ocr_time) >= 1.0
 
             if results and len(results) > 0 and results[0].boxes is not None:
                 boxes = results[0].boxes
@@ -326,7 +333,8 @@ class TrOCRStreamEngine:
                     cls_id = int(box.cls[0].item()) if box.cls is not None else 0
                     cls_name = str(self.yolo_model.names.get(cls_id, f"Class_{cls_id}")).upper()
 
-                    if cls_name in ['TIME', 'CLOCK']:
+                    if cls_name in ['TIME', 'CLOCK'] and can_run_ocr:
+                        self.last_ocr_time = time.time()
                         x1_p, y1_p = max(0, int(x1)), max(0, int(y1))
                         x2_p, y2_p = min(width, int(x2)), min(height, int(y2))
                         time_crop = frame_to_process[y1_p:y2_p, x1_p:x2_p]
@@ -352,7 +360,7 @@ class TrOCRStreamEngine:
                             except Exception:
                                 pass
 
-                    elif cls_name in ['SR', 'SB', 'SCORE_RED', 'SCORE_BLUE']:
+                    elif cls_name in ['SR', 'SB', 'SCORE_RED', 'SCORE_BLUE'] and can_run_ocr:
                         x1_p, y1_p = max(0, int(x1)), max(0, int(y1))
                         x2_p, y2_p = min(width, int(x2)), min(height, int(y2))
                         score_crop = frame_to_process[y1_p:y2_p, x1_p:x2_p]
@@ -400,7 +408,6 @@ class TrOCRStreamEngine:
                             'y': float(real_map_y)
                         })
 
-            # 2. הרצת מודל הכדורים (BALL)
             if self.ball_model is not None:
                 ball_results = self.ball_model(frame_to_process, conf=0.12, imgsz=640, verbose=False)
                 if ball_results and len(ball_results) > 0 and ball_results[0].boxes is not None:
@@ -448,7 +455,6 @@ def matches():
 @app.route('/war-room')
 def war_room():
     return render_template('war_room.html')
-
 
 @app.route('/static/map.png')
 def get_map():
@@ -508,9 +514,136 @@ def update_calibration():
     )
     return jsonify({'status': 'success'})
 
-# --- ניהול נתוני War Room ---
-MATCHES_DIR = os.path.join(BASE_DIR, "cached_matches")
-os.makedirs(MATCHES_DIR, exist_ok=True)
+# --- ניהול נתוני War Room והעלאת לוחות מקצים (PDF, JSON, CSV) ---
+
+@app.route('/api/upload_schedule', methods=['POST'])
+def upload_schedule():
+    if 'file' not in request.files:
+        return jsonify({'status': 'error', 'message': 'No file uploaded'})
+    
+    file = request.files['file']
+    filename = file.filename.lower()
+    
+    try:
+        if filename.endswith('.pdf'):
+            reader = PdfReader(file)
+            full_text = ""
+            for page in reader.pages:
+                extracted = page.extract_text()
+                if extracted:
+                    full_text += extracted + "\n"
+            
+            parsed_matches = []
+            
+            # פיצול חכם לפי מילות מפתח של מקצים בתחרויות FRC
+            lines = full_text.split('\n')
+            current_match_num = None
+            current_teams = []
+            
+            for line in lines:
+                line_str = line.strip()
+                if not line_str:
+                    continue
+                
+                match_num_search = re.search(r'\b(?:Qual|Qualification|Match|Q)\s*#?\s*(\d+)\b', line_str, re.IGNORECASE)
+                
+                if match_num_search:
+                    if current_match_num and len(current_teams) >= 6:
+                        parsed_matches.append({
+                            "id": f"qual_{current_match_num}",
+                            "name": f"Qualification {current_match_num}",
+                            "date": "ISR District Event",
+                            "duration": "02:30",
+                            "blue_alliance": current_teams[0:3],
+                            "red_alliance": current_teams[3:6],
+                            "red_score": 0,
+                            "blue_score": 0,
+                            "points": []
+                        })
+                    current_match_num = match_num_search.group(1)
+                    current_teams = []
+                
+                teams_in_line = re.findall(r'\b([1-9]\d{2,4})\b', line_str)
+                for t in teams_in_line:
+                    if len(t) >= 3 and t not in current_teams:
+                        current_teams.append(t)
+            
+            if current_match_num and len(current_teams) >= 6:
+                parsed_matches.append({
+                    "id": f"qual_{current_match_num}",
+                    "name": f"Qualification {current_match_num}",
+                    "date": "ISR District Event",
+                    "duration": "02:30",
+                    "blue_alliance": current_teams[0:3],
+                    "red_alliance": current_teams[3:6],
+                    "red_score": 0,
+                    "blue_score": 0,
+                    "points": []
+                })
+
+            # מנגנון גיבוי חכם לחילוץ לפי בלוקים אם הטקסט ב-PDF שונה מהמבנה הצפוי
+            if not parsed_matches:
+                all_teams = re.findall(r'\b([1-9]\d{2,4})\b', full_text)
+                for i in range(0, len(all_teams) - 5, 6):
+                    match_idx = (i // 6) + 1
+                    chunk = all_teams[i:i+6]
+                    parsed_matches.append({
+                        "id": f"qual_{match_idx}",
+                        "name": f"Qualification {match_idx}",
+                        "date": "ISR District Event",
+                        "duration": "02:30",
+                        "blue_alliance": chunk[0:3],
+                        "red_alliance": chunk[3:6],
+                        "red_score": 0,
+                        "blue_score": 0,
+                        "points": []
+                    })
+
+            schedule_id = "schedule_" + time.strftime("%Y%m%d_%H%M%S")
+            master_schedule_data = {
+                "id": schedule_id,
+                "name": file.filename,
+                "matches": parsed_matches
+            }
+            
+            filepath = os.path.join(MATCHES_DIR, f"{schedule_id}.json")
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(master_schedule_data, f, ensure_ascii=False, indent=4)
+                
+            return jsonify({
+                'status': 'success', 
+                'message': f'PDF processed successfully. Extracted {len(parsed_matches)} matches.'
+            })
+            
+        elif filename.endswith('.json'):
+            data = json.load(file)
+            match_id = data.get("id", "match_" + time.strftime("%Y%m%d_%H%M%S"))
+            filepath = os.path.join(MATCHES_DIR, f"{match_id}.json")
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+            return jsonify({'status': 'success'})
+            
+        elif filename.endswith('.csv'):
+            file_content = file.read().decode('utf-8', errors='ignore')
+            match_data = {
+                "id": "csv_schedule_" + time.strftime("%Y%m%d_%H%M%S"),
+                "name": file.filename,
+                "date": "יום התחרות",
+                "duration": "02:30",
+                "red_score": 0,
+                "blue_score": 0,
+                "raw_content": file_content
+            }
+            filepath = os.path.join(MATCHES_DIR, f"{match_data['id']}.json")
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(match_data, f, ensure_ascii=False, indent=4)
+            return jsonify({'status': 'success'})
+            
+        else:
+            return jsonify({'status': 'error', 'message': 'Unsupported file format'})
+            
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
 
 @app.route('/api/matches', methods=['GET'])
 def get_matches():
@@ -532,6 +665,17 @@ def get_matches():
             except Exception:
                 pass
     return jsonify({"matches": matches_list})
+
+@app.route('/api/matches/<match_id>', methods=['DELETE'])
+def delete_match(match_id):
+    filepath = os.path.join(MATCHES_DIR, f"{match_id}.json")
+    if os.path.exists(filepath):
+        try:
+            os.remove(filepath)
+            return jsonify({'status': 'success', 'message': 'Match deleted successfully'})
+        except Exception as e:
+            return jsonify({'status': 'error', 'message': str(e)}), 500
+    return jsonify({'status': 'error', 'message': 'Match not found'}), 404
 
 @app.route('/api/heatmap/<match_id>')
 def get_heatmap(match_id):
