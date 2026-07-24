@@ -6,6 +6,7 @@ import numpy as np
 import time
 import json
 import re
+import subprocess
 from collections import deque
 from threading import Thread, Lock
 from queue import Queue
@@ -158,6 +159,14 @@ class TrOCRStreamEngine:
         
         self.last_ocr_time = 0
         
+        # היסטוריית מיקומים לצורך מפת חום
+        self.historical_points = {
+            'all': [],
+            'red_alliance': [],
+            'blue_alliance': [],
+            'robots': {} # יישמר לפי מספר רובוט
+        }
+        
         Thread(target=self._yolo_loop, daemon=True).start()
         Thread(target=self._ocr_worker_loop, daemon=True).start()
 
@@ -165,6 +174,28 @@ class TrOCRStreamEngine:
         self.accumulated_blue_score = 0
         self.accumulated_red_score = 0
         self.current_scores = {'blue': 0, 'red': 0}
+        self.historical_points = {
+            'all': [],
+            'red_alliance': [],
+            'blue_alliance': [],
+            'robots': {}
+        }
+
+    def _get_youtube_hd_stream_url(self, youtube_url):
+        """שליפת כתובת הסטרימינג הישירה של יוטיוב באיכות HD (עד 1080p) באמצעות yt-dlp"""
+        command = [
+            'yt-dlp',
+            '-f', 'bestvideo[height<=1080]+bestaudio/best[height<=1080]',
+            '-g',
+            youtube_url
+        ]
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, check=True)
+            urls = result.stdout.strip().split('\n')
+            return urls[0] if urls else None
+        except Exception as e:
+            print(f"⚠️ שגיאה בשליפת קישור HD מיוטיוב: {e}")
+            return None
 
     def start_source(self, url_or_path):
         with self.cap_lock:
@@ -173,13 +204,19 @@ class TrOCRStreamEngine:
             if self.cap:
                 self.cap.release()
 
+            stream_url = url_or_path
             if url_or_path.startswith("http"):
-                ydl_opts = {'format': 'best[ext=mp4]/best', 'quiet': True}
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url_or_path, download=False)
-                    stream_url = info.get('url')
-            else:
-                stream_url = url_or_path
+                print("מחלץ קישור HD ישיר מיוטיוב עבור הלייב...")
+                hd_url = self._get_youtube_hd_stream_url(url_or_path)
+                if hd_url:
+                    stream_url = hd_url
+                    print("✅ קישור ה-HD לחילוץ בהצלחה!")
+                else:
+                    print("⚠️ נכשל חילוץ ה-HD, מנסה פביליות רגילות של yt-dlp...")
+                    ydl_opts = {'format': 'best[ext=mp4]/best', 'quiet': True}
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url_or_path, download=False)
+                        stream_url = info.get('url')
 
             self.cap = cv2.VideoCapture(stream_url)
             if not self.cap.isOpened():
@@ -240,7 +277,7 @@ class TrOCRStreamEngine:
                         self._save_recorded_clip()
                     self.clip_frames = []
 
-            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
             if ret:
                 with self.frame_lock:
                     self.raw_frame = frame.copy()
@@ -320,7 +357,7 @@ class TrOCRStreamEngine:
 
             results = self.yolo_model.track(
                 frame_to_process, persist=True, tracker="bytetrack.yaml",
-                conf=0.05, imgsz=640, verbose=False
+                conf=0.1, imgsz=1280, verbose=False
             )
 
             can_run_ocr = (time.time() - self.last_ocr_time) >= 1.0
@@ -394,22 +431,36 @@ class TrOCRStreamEngine:
                                     pass
 
                         team_number = str(self.robot_team_cache.get(track_id, f"Robot-{track_id}" if track_id else "Robot"))
+                        alliance_color = 'red' if (track_id or 0) % 2 == 0 else 'blue'
 
                         bot_x = float((x1 + x2) / 2.0)
                         bot_y = float(y2)
                         
                         real_map_x, real_map_y = self.homography.transform_point(bot_x, bot_y)
 
+                        pt_entry = {'x': float(real_map_x), 'y': float(real_map_y), 'robot_id': team_number}
+                        
+                        # שמירה להיסטוריית מפת החום
+                        self.historical_points['all'].append(pt_entry)
+                        if alliance_color == 'red':
+                            self.historical_points['red_alliance'].append(pt_entry)
+                        else:
+                            self.historical_points['blue_alliance'].append(pt_entry)
+                            
+                        if team_number not in self.historical_points['robots']:
+                            self.historical_points['robots'][team_number] = []
+                        self.historical_points['robots'][team_number].append(pt_entry)
+
                         telemetry.append({
                             'id': team_number,
                             'type': 'robot',
-                            'alliance': 'red' if (track_id or 0) % 2 == 0 else 'blue',
+                            'alliance': alliance_color,
                             'x': float(real_map_x),
                             'y': float(real_map_y)
                         })
 
             if self.ball_model is not None:
-                ball_results = self.ball_model(frame_to_process, conf=0.12, imgsz=640, verbose=False)
+                ball_results = self.ball_model(frame_to_process, conf=0.12, imgsz=1280, verbose=False)
                 if ball_results and len(ball_results) > 0 and ball_results[0].boxes is not None:
                     ball_boxes = ball_results[0].boxes
                     for bbox in ball_boxes:
@@ -535,7 +586,6 @@ def upload_schedule():
             
             parsed_matches = []
             
-            # פיצול חכם לפי מילות מפתח של מקצים בתחרויות FRC
             lines = full_text.split('\n')
             current_match_num = None
             current_teams = []
@@ -581,7 +631,6 @@ def upload_schedule():
                     "points": []
                 })
 
-            # מנגנון גיבוי חכם לחילוץ לפי בלוקים אם הטקסט ב-PDF שונה מהמבנה הצפוי
             if not parsed_matches:
                 all_teams = re.findall(r'\b([1-9]\d{2,4})\b', full_text)
                 for i in range(0, len(all_teams) - 5, 6):
@@ -654,17 +703,87 @@ def get_matches():
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    matches_list.append({
-                        "id": data.get("id"),
-                        "name": data.get("name"),
-                        "date": data.get("date"),
-                        "duration": data.get("duration"),
-                        "red_score": data.get("red_score"),
-                        "blue_score": data.get("blue_score")
-                    })
+                    if "matches" in data and isinstance(data["matches"], list):
+                        for m in data["matches"]:
+                            matches_list.append({
+                                "id": m.get("id"),
+                                "name": m.get("name"),
+                                "date": m.get("date"),
+                                "duration": m.get("duration"),
+                                "red_score": m.get("red_score", 0),
+                                "blue_score": m.get("blue_score", 0)
+                            })
+                    else:
+                        matches_list.append({
+                            "id": data.get("id"),
+                            "name": data.get("name"),
+                            "date": data.get("date"),
+                            "duration": data.get("duration"),
+                            "red_score": data.get("red_score", 0),
+                            "blue_score": data.get("blue_score", 0)
+                        })
             except Exception:
                 pass
     return jsonify({"matches": matches_list})
+
+def get_match_by_id(match_id):
+    """פונקציית עזר המאותרת ושולפת מקץ ספציפי לפי מזהה מתוך כל קבצי ה-JSON בתיקייה"""
+    for filename in os.listdir(MATCHES_DIR):
+        if filename.endswith(".json"):
+            filepath = os.path.join(MATCHES_DIR, filename)
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if data.get("id") == match_id:
+                        return {
+                            "red_teams": data.get("red_alliance", []),
+                            "blue_teams": data.get("blue_alliance", [])
+                        }
+                    if "matches" in data and isinstance(data["matches"], list):
+                        for m in data["matches"]:
+                            if m.get("id") == match_id:
+                                return {
+                                    "red_teams": m.get("red_alliance", []),
+                                    "blue_teams": m.get("blue_alliance", [])
+                                }
+            except Exception:
+                pass
+    return None
+
+@app.route('/api/war_room/head_to_head/<match_id>')
+def head_to_head_analysis(match_id):
+    match_data = get_match_by_id(match_id)
+    if not match_data:
+        return jsonify({"status": "error", "message": "Match not found"}), 404
+
+    red_teams = match_data.get("red_teams", [])
+    blue_teams = match_data.get("blue_teams", [])
+
+    def get_team_stats(team_number):
+        return {
+            "team": team_number,
+            "avg_auto": 15.5,
+            "avg_teleop": 45.0,
+            "avg_endgame": 12.0,
+            "primary_role": "Scorer"
+        }
+
+    red_stats = [get_team_stats(t) for t in red_teams]
+    blue_stats = [get_team_stats(t) for t in blue_teams]
+
+    red_total_auto = sum(s["avg_auto"] for s in red_stats)
+    blue_total_auto = sum(s["avg_auto"] for s in blue_stats)
+    
+    red_total_power = sum(s["avg_teleop"] + s["avg_endgame"] for s in red_stats)
+    blue_total_power = sum(s["avg_teleop"] + s["avg_endgame"] for s in blue_stats)
+
+    analysis = {
+        "red": {"teams": red_stats, "total_auto": red_total_auto, "total_power": red_total_power},
+        "blue": {"teams": blue_stats, "total_auto": blue_total_auto, "total_power": blue_total_power},
+        "autonomous_edge": "Red" if red_total_auto > blue_total_auto else "Blue"
+    }
+
+    return jsonify({"status": "success", "analysis": analysis})
 
 @app.route('/api/matches/<match_id>', methods=['DELETE'])
 def delete_match(match_id):
@@ -675,40 +794,47 @@ def delete_match(match_id):
             return jsonify({'status': 'success', 'message': 'Match deleted successfully'})
         except Exception as e:
             return jsonify({'status': 'error', 'message': str(e)}), 500
+    
+    for filename in os.listdir(MATCHES_DIR):
+        if filename.endswith(".json"):
+            filepath = os.path.join(MATCHES_DIR, filename)
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if "matches" in data:
+                    original_len = len(data["matches"])
+                    data["matches"] = [m for m in data["matches"] if m.get("id") != match_id]
+                    if len(data["matches"]) < original_len:
+                        with open(filepath, "w", encoding="utf-8") as f:
+                            json.dump(data, f, ensure_ascii=False, indent=4)
+                        return jsonify({'status': 'success', 'message': 'Match deleted from schedule successfully'})
+            except Exception:
+                pass
+
     return jsonify({'status': 'error', 'message': 'Match not found'}), 404
 
 @app.route('/api/heatmap/<match_id>')
 def get_heatmap(match_id):
     robot_filter = request.args.get('robot', 'all')
-    filepath = os.path.join(MATCHES_DIR, f"{match_id}.json")
-    if not os.path.exists(filepath):
-        return jsonify({"points": [], "robots": []})
-        
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            match = json.load(f)
-    except Exception:
-        return jsonify({"points": [], "robots": []})
+    
+    # שליפת רשימת הרובוטים הפעילים מתוך מנוע הריצה
+    active_robots = list(engine.historical_points['robots'].keys())
     
     points = []
-    robot_ids = set()
-    
-    if "frames" in match:
-        for frame in match.get("frames", []):
-            for obj in frame.get("objects", []):
-                if obj.get("type") == "robot":
-                    r_id = str(obj.get("id", obj.get("alliance", "unknown")))
-                    robot_ids.add(r_id)
-                    if robot_filter == 'all' or robot_filter == r_id:
-                        points.append({"x": obj["x"], "y": obj["y"]})
+    if robot_filter == 'all':
+        points = engine.historical_points['all']
+    elif robot_filter == 'red_alliance':
+        points = engine.historical_points['red_alliance']
+    elif robot_filter == 'blue_alliance':
+        points = engine.historical_points['blue_alliance']
     else:
-        points = match.get("points", [])
-        robot_ids = {"red_alliance", "blue_alliance"}
-
+        # סינון לפי מספר קבוצה/רובוט ספציפי
+        points = engine.historical_points['robots'].get(str(robot_filter), [])
+        
     return jsonify({
-        "points": points,
-        "robots": sorted(list(robot_ids))
+        'robots': active_robots,
+        'points': points
     })
-
+    
 if __name__ == '__main__':
     socketio.run(app, host='0.0.0.0', port=5000, debug=False)
