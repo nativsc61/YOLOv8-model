@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+
+{% block title %}FRC Tracker - לוח מקצים{% endblock %}
+
+{% block content %}
+<div class="bg-[#0f8fafc] p-6 rounded-2xl flex flex-col min-h-[600px] border border-[#d4af37]/40 shadow-xl">
+    
+    <div class="flex items-center justify-between mb-4 pb-3 border-b border-[#d4af37]/20">
+        <h2 class="text-lg font-bold text-[#d4af37] flex items-center gap-2">
+            <span>📊</span> לוח מקצים (Match Schedule)
+        </h2>
+        <div class="flex items-center gap-3">
+            <span class="text-xs bg-[#000c24] text-[#d4af37] border border-[#d4af37]/30 px-3.5 py-1.5 rounded-full font-bold shadow-sm" id="matches-count">0 מקצים</span>
+            <!-- כפתור העלאת לוח מקצים -->
+            <label class="cursor-pointer bg-[#d4af37] hover:bg-[#e6c252] text-[#012265] text-xs font-bold px-4 py-2 rounded-xl transition flex items-center gap-1.5 shadow-md">
+                <span>📁 העלה לוח מקצים (PDF/JSON/CSV)</span>
+                <input type="file" id="schedule-file-input" accept=".json,.csv,.pdf" class="hidden" onchange="uploadScheduleFile(this)">
+            </label>
+        </div>
+    </div>
+
+    <!-- Filters Bar -->
+    <div class="space-y-2.5 mb-4 bg-[#000c24]/70 p-4 rounded-xl border border-[#d4af37]/30 shadow-inner">
+        <span class="text-xs font-bold text-[#d4af37] block mb-1">סינון לפי קבוצות:</span>
+        <div class="flex gap-2">
+            <input id="team-search-input" type="text" oninput="filterMatches()" placeholder="חפש לפי מספר קבוצה (למשל: 1690)..." class="flex-1 bg-[#012265] border border-[#d4af37]/40 rounded-xl px-3.5 py-2 text-xs text-slate-100 placeholder-slate-400 focus:outline-none focus:border-[#d4af37] shadow-sm">
+        </div>
+        <div class="flex gap-2 flex-wrap text-xs pt-1">
+            <button onclick="setFilter('all', this)" class="filter-btn bg-[#d4af37] text-[#012265] font-bold px-3.5 py-1.5 rounded-xl transition shadow-sm">הכל</button>
+            <button onclick="setFilter('my_team', this)" class="filter-btn bg-[#012265] hover:bg-[#d4af37]/20 text-slate-200 border border-[#d4af37]/30 px-3.5 py-1.5 rounded-xl transition">הקבוצה שלי (1690)</button>
+            <button onclick="setFilter('red', this)" class="filter-btn bg-[#012265] hover:bg-red-950/40 text-red-400 border border-red-500/30 px-3.5 py-1.5 rounded-xl transition">ברית אדומה</button>
+            <button onclick="setFilter('blue', this)" class="filter-btn bg-[#012265] hover:bg-blue-950/40 text-blue-300 border border-blue-500/30 px-3.5 py-1.5 rounded-xl transition">ברית כחולה</button>
+        </div>
+    </div>
+
+    <!-- Matches List Container -->
+    <div class="flex-1 overflow-y-auto space-y-3" id="matches-list">
+        <div class="text-center text-[#d4af37]/70 py-10 text-xs">טוען מקצים או גרור קובץ לוח מקצים לכאן...</div>
+    </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let allMatches = [];
+    let currentFilter = 'all';
+
+    async function loadMatches() {
+        try {
+            const res = await fetch('/api/matches');
+            const data = await res.json();
+            allMatches = data.matches || [];
+            renderMatches(allMatches);
+        } catch (e) {
+            console.error("שגיאה בטעינת המקצים:", e);
+        }
+    }
+
+    function renderMatches(matches) {
+        const container = document.getElementById('matches-list');
+        document.getElementById('matches-count').innerText = `${matches.length} מקצים`;
+        
+        if (matches.length === 0) {
+            container.innerHTML = `<div class="text-center text-[#d4af37]/70 py-10 text-xs">אין מקצים להצגה. השתמש בכפתור "העלה לוח מקצים" למעלה.</div>`;
+            return;
+        }
+
+        container.innerHTML = matches.map(m => `
+            <div class="bg-[#000c24]/80 border border-[#d4af37]/30 hover:border-[#d4af37]/70 p-3.5 rounded-xl flex items-center justify-between transition shadow-sm">
+                <div class="flex items-center gap-4">
+                    <div class="bg-[#012265] px-3.5 py-2 rounded-lg text-center min-w-[70px] border border-[#d4af37]/30">
+                        <span class="text-[10px] text-slate-400 block">מקצה</span>
+                        <span class="text-xs font-bold text-[#d4af37]">${m.name || m.id}</span>
+                    </div>
+                    <div>
+                        <div class="text-xs font-semibold text-slate-200">${m.date || 'יום המוקדמות'}</div>
+                        <div class="text-[10px] text-slate-400">משך: ${m.duration || '02:30'}</div>
+                    </div>
+                </div>
+                
+                <div class="flex items-center gap-3">
+                    <div class="text-left text-xs bg-[#012265] px-3 py-1.5 rounded-xl border border-[#d4af37]/20">
+                        <span class="text-red-400 font-bold">${m.red_score ?? '-'}</span> : 
+                        <span class="text-blue-300 font-bold">${m.blue_score ?? '-'}</span>
+                    </div>
+                    <a href="/matches/${m.id}" class="bg-[#012265] hover:bg-[#d4af37] text-slate-200 hover:text-[#012265] border border-[#d4af37]/40 text-xs font-bold px-3.5 py-2 rounded-xl transition shadow-sm">
+                        צפה בניתוח ➔
+                    </a>
+                    <button onclick="deleteMatch('${m.id}')" class="bg-[#012265] hover:bg-red-950 text-slate-300 hover:text-red-400 border border-[#d4af37]/30 hover:border-red-500/40 text-xs px-3 py-2 rounded-xl transition shadow-sm" title="מחק מקצה">
+                        🗑️
+                    </button>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    async function deleteMatch(matchId) {
+        if (!confirm("האם אתה בטוח שברצונך למחוק מקצה זה?")) return;
+
+        try {
+            const res = await fetch(`/api/matches/${matchId}`, {
+                method: 'DELETE'
+            });
+            const result = await res.json();
+            if (result.status === 'success') {
+                loadMatches();
+            } else {
+                alert("שגיאה במחיקת המקצה: " + (result.message || ''));
+            }
+        } catch (e) {
+            console.error(e);
+            alert("שגיאת תקשורת מול השרת.");
+        }
+    }
+
+    async function uploadScheduleFile(input) {
+        const file = input.files[0];
+        if (!file) return;
+
+        const formData = new FormData();
+        formData.append("file", file);
+
+        try {
+            const res = await fetch('/api/upload_schedule', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await res.json();
+            if (result.status === 'success') {
+                alert("לוח המקצים הועלה וסודר בהצלחה!");
+                loadMatches();
+            } else {
+                alert("שגיאה בהעלאת הקובץ: " + result.message);
+            }
+        } catch (e) {
+            console.error(e);
+            alert("שגיאת תקשורת מול השרת.");
+        }
+        input.value = '';
+    }
+
+    document.addEventListener("DOMContentLoaded", loadMatches);
+</script>
+{% endblock %}

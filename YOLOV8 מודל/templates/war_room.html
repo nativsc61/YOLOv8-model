@@ -1,0 +1,335 @@
+{% extends "base.html" %}
+
+{% block title %}FRC Tracker - Strategy War Room{% endblock %}
+
+{% block content %}
+<!-- אזור השוואת ראש-בראש (Head-to-Head) -->
+<div id="h2h-container" class="bg-[#012265] p-5 rounded-2xl border border-[#d4af37]/40 shadow-xl mt-6 hidden">
+    <div class="flex items-center justify-between border-b border-[#d4af37]/20 pb-3 mb-4">
+        <h3 class="text-sm font-bold text-[#d4af37] flex items-center gap-2">
+            ⚔️ השוואת ראש-בראש (Alliance Matchup)
+        </h3>
+        <span id="h2h-match-title" class="text-xs font-mono text-slate-300 bg-[#000c24] px-3 py-1 rounded-full border border-[#d4af37]/30"></span>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <!-- ברית אדומה -->
+        <div class="bg-red-950/30 border border-red-500/40 p-4 rounded-xl space-y-3">
+            <div class="flex justify-between items-center text-xs font-bold text-red-400 border-b border-red-500/20 pb-2">
+                <span>🔴 הברית האדומה</span>
+                <span id="red-alliance-power">הספק כולל: 0 נק'</span>
+            </div>
+            <div id="red-teams-breakdown" class="space-y-2">
+                <!-- נתוני רובוטים אדומים יטענו כאן דינמית -->
+            </div>
+        </div>
+
+        <!-- ברית כחולה -->
+        <div class="bg-blue-950/30 border border-blue-500/40 p-4 rounded-xl space-y-3">
+            <div class="flex justify-between items-center text-xs font-bold text-blue-300 border-b border-blue-500/20 pb-2">
+                <span>🔵 הברית הכחולה</span>
+                <span id="blue-alliance-power">הספק כולל: 0 נק'</span>
+            </div>
+            <div id="blue-teams-breakdown" class="space-y-2">
+                <!-- נתוני רובוטים כחולים יטענו כאן דינמית -->
+            </div>
+        </div>
+    </div>
+
+    <!-- שורה תחתונה: יתרון באוטונומי -->
+    <div class="mt-4 bg-[#000c24]/70 p-3 rounded-xl border border-[#d4af37]/30 flex justify-between items-center text-xs">
+        <span class="text-slate-300 font-bold">מי שולט באוטונומי (Autonomous Edge)?</span>
+        <span id="auto-edge-indicator" class="font-bold px-3 py-1 rounded-lg bg-[#d4af37] text-[#012265]">טוען...</span>
+    </div>
+</div>
+
+<div class="space-y-6">
+    <div class="flex justify-between items-center bg-[#012265]/90 border border-[#d4af37]/40 px-6 py-4 rounded-2xl shadow-lg backdrop-blur-md">
+        <div>
+            <h1 class="text-xl font-bold text-[#d4af37] flex items-center gap-2">
+                ⚔️ Strategy War Room
+            </h1>
+            <p class="text-xs text-slate-300 mt-0.5">ניתוח טקטי, סיכומי מקצים ומפות חום ממוקדות לפי רובוט</p>
+        </div>
+        <button onclick="loadMatches()" class="bg-[#012265] hover:bg-[#d4af37]/20 text-xs text-[#d4af37] px-3.5 py-2 rounded-xl border border-[#d4af37]/40 transition flex items-center gap-1.5 shadow-sm">
+            <span>🔄</span> רענן נתונים
+        </button>
+    </div>
+
+    <!-- גריד של כרטיסיות מקצים -->
+    <div id="matches-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div class="col-span-full text-center py-8 text-[#d4af37]/70 text-sm">
+            טוען נתוני War Room...
+        </div>
+    </div>
+</div>
+
+<!-- Modal לצפייה במפת החום -->
+<div id="heatmap-modal" class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
+    <div class="bg-[#012265] max-w-2xl w-full p-5 rounded-2xl border border-[#d4af37]/50 space-y-4 shadow-2xl">
+        <div class="flex justify-between items-center border-b border-[#d4af37]/20 pb-3">
+            <h3 id="modal-title" class="text-sm font-bold text-[#d4af37]">מפת חום - מקץ</h3>
+            <button onclick="closeModal()" class="text-[#d4af37]/70 hover:text-[#d4af37] font-bold text-lg">&times;</button>
+        </div>
+
+        <!-- סרגל סינון לפי רובוט -->
+        <div class="flex items-center justify-between bg-[#000c24]/60 p-3 rounded-xl border border-[#d4af37]/30">
+            <span class="text-xs font-bold text-slate-200">בחר רובוט לניתוח:</span>
+            <div id="robot-filters" class="flex flex-wrap gap-1.5">
+                <button onclick="filterRobot('all')" class="robot-filter-btn text-[11px] px-2.5 py-1 rounded bg-[#d4af37] text-[#012265] font-bold transition">הכל</button>
+            </div>
+        </div>
+
+        <div class="relative border border-[#d4af37]/30 rounded-xl overflow-hidden aspect-[3/2] bg-[#000c24] flex items-center justify-center shadow-inner">
+            <canvas id="heatmap-canvas" width="600" height="400" class="w-full h-full block"></canvas>
+        </div>
+
+        <div class="flex justify-between items-center text-xs text-slate-300">
+            <div class="flex items-center gap-2">
+                <span>מקרא עוצמה:</span>
+                <div class="h-3 w-24 rounded bg-gradient-to-r from-blue-500 via-green-500 via-yellow-500 to-red-500 border border-[#d4af37]/30"></div>
+                <span>תנועה גבוהה</span>
+            </div>
+            <button onclick="closeModal()" class="bg-[#000c24] hover:bg-[#d4af37]/20 text-[#d4af37] border border-[#d4af37]/40 px-4 py-1.5 rounded-xl font-bold transition">סגור</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let mapImage = new Image();
+    let isMapLoaded = false;
+    mapImage.src = '/static/map.png';
+    mapImage.onload = () => { isMapLoaded = true; };
+
+    let currentMatchId = null;
+    let currentMatchName = '';
+    let selectedRobot = 'all';
+
+    document.addEventListener('DOMContentLoaded', loadMatches);
+
+    function loadMatches() {
+        fetch('/api/matches')
+            .then(res => res.json())
+            .then(data => {
+                const grid = document.getElementById('matches-grid');
+                if (!data.matches || data.matches.length === 0) {
+                    grid.innerHTML = `<div class="col-span-full text-center py-8 text-[#d4af37]/70 text-sm">לא נשמרו מקצים עדיין. הפעל והקלט שידור בדף הראשי!</div>`;
+                    return;
+                }
+
+                grid.innerHTML = data.matches.map(m => `
+                    <div class="bg-[#012265] p-4 rounded-2xl border border-[#d4af37]/40 space-y-3 shadow-lg">
+                        <div class="flex justify-between items-start">
+                            <div>
+                                <h3 class="font-bold text-sm text-slate-100">${m.name}</h3>
+                                <span class="text-[10px] text-slate-300">${m.date}</span>
+                            </div>
+                            <span class="text-xs font-mono font-bold px-2.5 py-1 rounded-full bg-[#000c24] text-[#d4af37] border border-[#d4af37]/30 shadow-sm">
+                                ${m.duration}
+                            </span>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-2 bg-[#000c24]/70 p-2.5 rounded-xl text-center border border-[#d4af37]/20">
+                            <div>
+                                <div class="text-[10px] text-slate-300">ברית אדומה</div>
+                                <div class="text-base font-bold text-red-400">${m.red_score}</div>
+                            </div>
+                            <div>
+                                <div class="text-[10px] text-slate-300">ברית כחולה</div>
+                                <div class="text-base font-bold text-blue-300">${m.blue_score}</div>
+                            </div>
+                        </div>
+
+                        <button onclick="openHeatmapModal('${m.id}', '${m.name}')" class="w-full bg-[#d4af37] hover:bg-[#e6c252] text-[#012265] text-xs font-bold py-2.5 rounded-xl transition shadow-md">
+                            🔥 הצג מפת חום לפי רובוט
+                        </button>
+                    </div>
+                `).join('');
+            });
+    }
+
+    function loadHeadToHead(matchId, matchName) {
+        document.getElementById('h2h-container').classList.remove('hidden');
+        document.getElementById('h2h-match-title').innerText = matchName;
+
+        fetch(`/api/war_room/head_to_head/${matchId}`)
+            .then(res => res.json())
+            .then(data => {
+                if (data.status !== 'success') return;
+                const analysis = data.analysis;
+
+                document.getElementById('red-alliance-power').innerText = `הספק כולל: ${analysis.red.total_power.toFixed(1)} נק'`;
+                document.getElementById('red-teams-breakdown').innerHTML = analysis.red.teams.map(t => `
+                    <div class="bg-[#000c24]/80 p-2.5 rounded-lg border border-red-500/20 flex justify-between items-center text-xs">
+                        <div>
+                            <span class="font-bold text-slate-100 font-mono">רובוט ${t.team}</span>
+                            <span class="text-[10px] text-slate-400 block">תפקיד: ${t.primary_role}</span>
+                        </div>
+                        <div class="text-left font-mono text-[11px] text-slate-300">
+                            אוטו: <span class="text-red-400 font-bold">${t.avg_auto}</span> | טלאופ: <span class="text-slate-100">${t.avg_teleop}</span>
+                        </div>
+                    </div>
+                `).join('');
+
+                document.getElementById('blue-alliance-power').innerText = `הספק כולל: ${analysis.blue.total_power.toFixed(1)} נק'`;
+                document.getElementById('blue-teams-breakdown').innerHTML = analysis.blue.teams.map(t => `
+                    <div class="bg-[#000c24]/80 p-2.5 rounded-lg border border-blue-500/20 flex justify-between items-center text-xs">
+                        <div>
+                            <span class="font-bold text-slate-100 font-mono">רובוט ${t.team}</span>
+                            <span class="text-[10px] text-slate-400 block">תפקיד: ${t.primary_role}</span>
+                        </div>
+                        <div class="text-left font-mono text-[11px] text-slate-300">
+                            אוטו: <span class="text-blue-300 font-bold">${t.avg_auto}</span> | טלאופ: <span class="text-slate-100">${t.avg_teleop}</span>
+                        </div>
+                    </div>
+                `).join('');
+
+                const edgeIndicator = document.getElementById('auto-edge-indicator');
+                if (analysis.autonomous_edge === 'Red') {
+                    edgeIndicator.innerText = '🔴 יתרון באוטונומי: ברית אדומה';
+                    edgeIndicator.className = 'font-bold px-3 py-1 rounded-lg bg-red-600 text-white';
+                } else {
+                    edgeIndicator.innerText = '🔵 יתרון באוטונומי: ברית כחולה';
+                    edgeIndicator.className = 'font-bold px-3 py-1 rounded-lg bg-blue-600 text-white';
+                }
+            });
+    }
+
+    function openHeatmapModal(matchId, matchName) {
+        currentMatchId = matchId;
+        currentMatchName = matchName;
+        selectedRobot = 'all';
+        
+        document.getElementById('modal-title').innerText = `מפת חום - ${matchName}`;
+        const modal = document.getElementById('heatmap-modal');
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+
+        fetchHeatmapData();
+    }
+
+    function fetchHeatmapData() {
+        fetch(`/api/heatmap/${currentMatchId}?robot=${selectedRobot}`)
+            .then(res => res.json())
+            .then(data => {
+                updateRobotFilterButtons(data.robots || []);
+                renderHeatmap(data.points || []);
+            });
+    }
+
+    function updateRobotFilterButtons(robots) {
+        const container = document.getElementById('robot-filters');
+        
+        // כפתור "הכל"
+        let html = `<button onclick="filterRobot('all')" class="robot-filter-btn text-[11px] px-2.5 py-1 rounded ${selectedRobot === 'all' ? 'bg-[#d4af37] text-[#012265] font-bold' : 'bg-[#000c24] text-slate-200 hover:bg-[#d4af37]/20 border border-[#d4af37]/30'} transition">הכל</button>`;
+        
+        // כפתור ברית אדומה
+        const isRedActive = selectedRobot === 'red_alliance';
+        html += `<button onclick="filterRobot('red_alliance')" class="robot-filter-btn text-[11px] px-2.5 py-1 rounded ${isRedActive ? 'bg-red-600 text-white font-bold' : 'bg-[#000c24] text-red-400 hover:bg-red-950/40 border border-red-500/30'} transition">ברית אדומה</button>`;
+
+        // כפתור ברית כחולה
+        const isBlueActive = selectedRobot === 'blue_alliance';
+        html += `<button onclick="filterRobot('blue_alliance')" class="robot-filter-btn text-[11px] px-2.5 py-1 rounded ${isBlueActive ? 'bg-blue-600 text-white font-bold' : 'bg-[#000c24] text-blue-300 hover:bg-blue-950/40 border border-blue-500/30'} transition">ברית כחולה</button>`;
+
+        // רובוטים פרטניים נוספים
+        robots.forEach(rId => {
+            if (rId !== 'red_alliance' && rId !== 'blue_alliance') {
+                const isActive = selectedRobot === rId;
+                const activeClass = isActive ? 'bg-[#d4af37] text-[#012265] font-bold' : 'bg-[#000c24] text-slate-200 hover:bg-[#d4af37]/20 border border-[#d4af37]/30';
+                html += `<button onclick="filterRobot('${rId}')" class="robot-filter-btn text-[11px] px-2.5 py-1 rounded ${activeClass} transition font-mono">רובוט ${rId}</button>`;
+            }
+        });
+        
+        container.innerHTML = html;
+    }
+
+    function filterRobot(rId) {
+        selectedRobot = rId;
+        fetchHeatmapData();
+    }
+
+    function closeModal() {
+        const modal = document.getElementById('heatmap-modal');
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+    }
+
+    function renderHeatmap(points) {
+        const canvas = document.getElementById('heatmap-canvas');
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        if (isMapLoaded) {
+            ctx.drawImage(mapImage, 0, 0, canvas.width, canvas.height);
+        } else {
+            ctx.fillStyle = '#000c24';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+
+        if (points.length === 0) {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+            ctx.font = '12px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('אין נתוני מיקום עבור הסינון הנבחר במקץ זה', canvas.width / 2, canvas.height / 2);
+            return;
+        }
+
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = canvas.width;
+        tempCanvas.height = canvas.height;
+        const tempCtx = tempCanvas.getContext('2d');
+
+        points.forEach(p => {
+            const radius = 12; // רדיוס ממוקד
+            const gradient = tempCtx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius);
+            gradient.addColorStop(0, 'rgba(0, 0, 0, 1)');
+            gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+            tempCtx.fillStyle = gradient;
+            tempCtx.beginPath();
+            tempCtx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+            tempCtx.fill();
+        });
+
+        const imgData = tempCtx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imgData.data;
+
+        for (let i = 0; i < data.length; i += 4) {
+            const alpha = data[i + 3];
+            if (alpha > 0) {
+                const color = getHeatColor(alpha);
+                data[i] = color.r;
+                data[i + 1] = color.g;
+                data[i + 2] = color.b;
+                data[i + 3] = Math.min(180, alpha * 0.9);
+            }
+        }
+
+        tempCtx.putImageData(imgData, 0, 0);
+        ctx.drawImage(tempCanvas, 0, 0);
+    }
+
+    function getHeatColor(alpha) {
+        const value = alpha / 255;
+        let r = 0, g = 0, b = 0;
+
+        if (value < 0.25) {
+            b = 255;
+            g = Math.floor(value * 4 * 255);
+        } else if (value < 0.5) {
+            g = 255;
+            b = Math.floor((0.5 - value) * 4 * 255);
+        } else if (value < 0.75) {
+            g = 255;
+            r = Math.floor((value - 0.5) * 4 * 255);
+        } else {
+            r = 255;
+            g = Math.floor((1 - value) * 4 * 255);
+        }
+
+        return { r, g, b };
+    }
+</script>
+{% endblock %}
