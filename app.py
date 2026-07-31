@@ -106,15 +106,15 @@ class TrOCRStreamEngine:
     def __init__(self, model_path=DEFAULT_MODEL_PATH, ball_model_path=BALL_MODEL_PATH):
         print(f"Loading YOLO Model from {model_path}...")
         if os.path.exists(model_path):
-            self.yolo_model = YOLO(model_path).to('cuda')
+            self.yolo_model = YOLO(model_path).to(device)
             print("✅ מודל YOLO ראשי נטען בהצלחה על כרטיס המסך!")
         else:
             print(f"⚠️ אזהרה: הקובץ {model_path} לא נמצא. טוען yolo11n.pt ברירת מחדל...")
-            self.yolo_model = YOLO("yolo11n.pt").to('cuda')
+            self.yolo_model = YOLO("yolo11n.pt").to(device)
 
         print(f"Loading Ball YOLO Model from {ball_model_path}...")
         if os.path.exists(ball_model_path):
-            self.ball_model = YOLO(ball_model_path).to('cuda')
+            self.ball_model = YOLO(ball_model_path).to(device)
             print("✅ מודל הכדורים (BALL) נטען בהצלחה על כרטיס המסך!")
         else:
             print(f"⚠️ אזהרה: קובץ מודל הכדורים {ball_model_path} לא נמצא. זיהוי כדורים לא יופעל.")
