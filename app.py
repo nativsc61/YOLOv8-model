@@ -36,7 +36,7 @@ app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # ==========================================
-# 1. מילון קבוצות FRC בישראל (מעודכן לכל הקבוצות והרוקיז)
+# 1. מילון קבוצות FRC בישראל
 # ==========================================
 ALLOWED_FRC_TEAMS = [
     "1574", "1576", "1577", "1580", "1657", "1690", "1937", "1942", "1943", "1954", 
@@ -49,7 +49,9 @@ ALLOWED_FRC_TEAMS = [
     "11332", "11390", "11471", "11478", "11480"
 ]
 
+# זיהוי דינמי של חומרה (CPU/CUDA)
 device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"🚀 מריץ את ה-Models על התקן: {device}")
 
 trocr_available = False
 processor = None
@@ -107,7 +109,7 @@ class TrOCRStreamEngine:
         print(f"Loading YOLO Model from {model_path}...")
         if os.path.exists(model_path):
             self.yolo_model = YOLO(model_path).to(device)
-            print("✅ מודל YOLO ראשי נטען בהצלחה על כרטיס המסך!")
+            print(f"✅ מודל YOLO ראשי נטען בהצלחה על {device}!")
         else:
             print(f"⚠️ אזהרה: הקובץ {model_path} לא נמצא. טוען yolo11n.pt ברירת מחדל...")
             self.yolo_model = YOLO("yolo11n.pt").to(device)
@@ -115,7 +117,7 @@ class TrOCRStreamEngine:
         print(f"Loading Ball YOLO Model from {ball_model_path}...")
         if os.path.exists(ball_model_path):
             self.ball_model = YOLO(ball_model_path).to(device)
-            print("✅ מודל הכדורים (BALL) נטען בהצלחה על כרטיס המסך!")
+            print(f"✅ מודל הכדורים (BALL) נטען בהצלחה על {device}!")
         else:
             print(f"⚠️ אזהרה: קובץ מודל הכדורים {ball_model_path} לא נמצא. זיהוי כדורים לא יופעל.")
             self.ball_model = None
@@ -159,12 +161,11 @@ class TrOCRStreamEngine:
         
         self.last_ocr_time = 0
         
-        # היסטוריית מיקומים לצורך מפת חום
         self.historical_points = {
             'all': [],
             'red_alliance': [],
             'blue_alliance': [],
-            'robots': {} # יישמר לפי מספר רובוט
+            'robots': {}
         }
         
         Thread(target=self._yolo_loop, daemon=True).start()
@@ -182,7 +183,6 @@ class TrOCRStreamEngine:
         }
 
     def _get_youtube_hd_stream_url(self, youtube_url):
-        """שליפת כתובת הסטרימינג הישירה של יוטיוב באיכות HD (עד 1080p) באמצעות yt-dlp"""
         command = [
             'yt-dlp',
             '-f', 'bestvideo[height<=1080]+bestaudio/best[height<=1080]',
@@ -210,7 +210,7 @@ class TrOCRStreamEngine:
                 hd_url = self._get_youtube_hd_stream_url(url_or_path)
                 if hd_url:
                     stream_url = hd_url
-                    print("✅ קישור ה-HD לחילוץ בהצלחה!")
+                    print("✅ קישור ה-HD נחלץ בהצלחה!")
                 else:
                     print("⚠️ נכשל חילוץ ה-HD, מנסה פביליות רגילות של yt-dlp...")
                     ydl_opts = {'format': 'best[ext=mp4]/best', 'quiet': True}
@@ -357,7 +357,7 @@ class TrOCRStreamEngine:
 
             results = self.yolo_model.track(
                 frame_to_process, persist=True, tracker="bytetrack.yaml",
-                conf=0.1, imgsz=1280, verbose=False
+                conf=0.1, imgsz=1280, verbose=False, device=device
             )
 
             can_run_ocr = (time.time() - self.last_ocr_time) >= 1.0
@@ -440,7 +440,6 @@ class TrOCRStreamEngine:
 
                         pt_entry = {'x': float(real_map_x), 'y': float(real_map_y), 'robot_id': team_number}
                         
-                        # שמירה להיסטוריית מפת החום
                         self.historical_points['all'].append(pt_entry)
                         if alliance_color == 'red':
                             self.historical_points['red_alliance'].append(pt_entry)
@@ -460,7 +459,7 @@ class TrOCRStreamEngine:
                         })
 
             if self.ball_model is not None:
-                ball_results = self.ball_model(frame_to_process, conf=0.12, imgsz=1280, verbose=False)
+                ball_results = self.ball_model(frame_to_process, conf=0.12, imgsz=1280, verbose=False, device=device)
                 if ball_results and len(ball_results) > 0 and ball_results[0].boxes is not None:
                     ball_boxes = ball_results[0].boxes
                     for bbox in ball_boxes:
@@ -565,8 +564,6 @@ def update_calibration():
     )
     return jsonify({'status': 'success'})
 
-# --- ניהול נתוני War Room והעלאת לוחות מקצים (PDF, JSON, CSV) ---
-
 @app.route('/api/upload_schedule', methods=['POST'])
 def upload_schedule():
     if 'file' not in request.files:
@@ -585,7 +582,6 @@ def upload_schedule():
                     full_text += extracted + "\n"
             
             parsed_matches = []
-            
             lines = full_text.split('\n')
             current_match_num = None
             current_teams = []
@@ -658,7 +654,7 @@ def upload_schedule():
             filepath = os.path.join(MATCHES_DIR, f"{schedule_id}.json")
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(master_schedule_data, f, ensure_ascii=False, indent=4)
-                
+            
             return jsonify({
                 'status': 'success', 
                 'message': f'PDF processed successfully. Extracted {len(parsed_matches)} matches.'
@@ -727,7 +723,6 @@ def get_matches():
     return jsonify({"matches": matches_list})
 
 def get_match_by_id(match_id):
-    """פונקציית עזר המאותרת ושולפת מקץ ספציפי לפי מזהה מתוך כל קבצי ה-JSON בתיקייה"""
     for filename in os.listdir(MATCHES_DIR):
         if filename.endswith(".json"):
             filepath = os.path.join(MATCHES_DIR, filename)
@@ -817,7 +812,6 @@ def delete_match(match_id):
 def get_heatmap(match_id):
     robot_filter = request.args.get('robot', 'all')
     
-    # שליפת רשימת הרובוטים הפעילים מתוך מנוע הריצה
     active_robots = list(engine.historical_points['robots'].keys())
     
     points = []
@@ -828,7 +822,6 @@ def get_heatmap(match_id):
     elif robot_filter == 'blue_alliance':
         points = engine.historical_points['blue_alliance']
     else:
-        # סינון לפי מספר קבוצה/רובוט ספציפי
         points = engine.historical_points['robots'].get(str(robot_filter), [])
         
     return jsonify({
@@ -837,4 +830,5 @@ def get_heatmap(match_id):
     })
     
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
+    port = int(os.environ.get('PORT', 5000))
+    socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
